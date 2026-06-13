@@ -6,6 +6,7 @@ import {
   CameraMode,
   NavigationSegment,
   ContinueOption,
+  WaypointInfo,
 } from '@/types/parking';
 import { generateParkingSpots, findSpotByPlate } from '@/utils/parkingData';
 import { 
@@ -13,6 +14,7 @@ import {
   createSmoothPath,
   generateNavigationSegments,
   getCurrentSegmentIndex,
+  getWaypointOptions,
 } from '@/utils/pathUtils';
 
 interface VehicleLeftEvent {
@@ -35,6 +37,7 @@ export interface NavigationState {
   progress: number;
   segments: NavigationSegment[];
   currentSegmentIndex: number;
+  waypoint: WaypointInfo | null;
 }
 
 interface StoreState extends AppState {
@@ -43,6 +46,8 @@ interface StoreState extends AppState {
   selectedFloor: number;
   selectedSpotId: string | null;
   filterKeyword: string;
+  availableWaypoints: WaypointInfo[];
+  selectedWaypoint: WaypointInfo | null;
 }
 
 interface StoreActions {
@@ -78,6 +83,7 @@ interface StoreActions {
   focusOnSpot: (spotId: string) => void;
   resetAllState: () => void;
   setFilterKeyword: (keyword: string) => void;
+  setSelectedWaypoint: (waypoint: WaypointInfo | null) => void;
 }
 
 const initialNavigationState: NavigationState = {
@@ -92,6 +98,7 @@ const initialNavigationState: NavigationState = {
   progress: 0,
   segments: [],
   currentSegmentIndex: 0,
+  waypoint: null,
 };
 
 const initialContinueDialog = {
@@ -100,6 +107,18 @@ const initialContinueDialog = {
   oldSpot: null,
   newSpot: null,
 };
+
+function buildRouteForSpot(plate: string, spot: ParkingSpot, waypoint?: WaypointInfo | null) {
+  const pathPoints = generateNavigationPath(spot, waypoint);
+  const { totalLength, points } = createSmoothPath(pathPoints);
+  const segments = generateNavigationSegments(spot, points, totalLength, waypoint);
+  return {
+    totalLength,
+    points,
+    segments,
+    pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
+  };
+}
 
 const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
   parkingSpots: [],
@@ -113,6 +132,8 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
   selectedSpotId: null,
   filterKeyword: '',
   continueDialog: initialContinueDialog,
+  availableWaypoints: [],
+  selectedWaypoint: null,
 
   initializeSpots: () => {
     const spots = generateParkingSpots();
@@ -143,9 +164,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         newSelectedPlate = null;
         newSelectedSpotId = null;
       } else if (newSpot.id !== state.navigation.targetSpotId) {
-        const pathPoints = generateNavigationPath(newSpot);
-        const { totalLength, points } = createSmoothPath(pathPoints);
-        const segments = generateNavigationSegments(newSpot, points, totalLength);
+        const { totalLength, segments, pathPoints } = buildRouteForSpot(plate, newSpot, state.navigation.waypoint);
         const currentProgress = state.navigation.progress;
         
         newNav = {
@@ -153,7 +172,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
           targetSpotId: newSpot.id,
           totalDistance: totalLength,
           distanceRemaining: totalLength * (1 - currentProgress),
-          pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
+          pathPoints,
           segments,
           currentSegmentIndex: getCurrentSegmentIndex(currentProgress, segments),
         };
@@ -194,6 +213,14 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       }
     }
     
+    let newWaypoints = state.availableWaypoints;
+    if (newSelectedSpotId) {
+      const targetSpot = spots.find(s => s.id === newSelectedSpotId);
+      if (targetSpot) {
+        newWaypoints = getWaypointOptions(spots, targetSpot);
+      }
+    }
+    
     set({
       parkingSpots: spots,
       navigation: newNav,
@@ -201,6 +228,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       selectedSpotId: newSelectedSpotId,
       selectedFloor: newSelectedFloor,
       vehicleLeftEvent: vehicleEvent,
+      availableWaypoints: newWaypoints,
     });
   },
 
@@ -224,9 +252,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         const newSpot = findSpotByPlate(spots, plate);
         
         if (newSpot && newSpot.isOccupied && newSpot.id !== spotId) {
-          const pathPoints = generateNavigationPath(newSpot);
-          const { totalLength, points } = createSmoothPath(pathPoints);
-          const segments = generateNavigationSegments(newSpot, points, totalLength);
+          const { totalLength, segments, pathPoints } = buildRouteForSpot(plate, newSpot, nav.waypoint);
           const currentProgress = nav.progress;
           
           newNav = {
@@ -234,7 +260,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
             targetSpotId: newSpot.id,
             totalDistance: totalLength,
             distanceRemaining: totalLength * (1 - currentProgress),
-            pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
+            pathPoints,
             segments,
             currentSegmentIndex: getCurrentSegmentIndex(currentProgress, segments),
           };
@@ -314,17 +340,18 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       return false;
     }
     
-    const pathPoints = generateNavigationPath(spot);
-    const { totalLength, points } = createSmoothPath(pathPoints);
-    const segments = generateNavigationSegments(spot, points, totalLength);
+    const waypoint = state.selectedWaypoint;
+    const { totalLength, segments, pathPoints } = buildRouteForSpot(plateNumber, spot, waypoint);
     const clampedProgress = Math.max(0, Math.min(1, startProgress));
     const distanceRemaining = totalLength * (1 - clampedProgress);
+    const waypoints = getWaypointOptions(state.parkingSpots, spot);
     
     set({
       selectedPlate: plateNumber,
       selectedSpotId: spot.id,
       selectedFloor: spot.floor,
       continueDialog: initialContinueDialog,
+      availableWaypoints: waypoints,
       navigation: {
         isActive: true,
         isPaused: false,
@@ -333,10 +360,11 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         currentFloor: 0,
         distanceRemaining,
         totalDistance: totalLength,
-        pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
+        pathPoints,
         progress: clampedProgress,
         segments,
         currentSegmentIndex: getCurrentSegmentIndex(clampedProgress, segments),
+        waypoint,
       },
     });
     
@@ -347,6 +375,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       spotId: spot.id,
       position: { ...spot.position },
       lastProgress: clampedProgress,
+      lastSegmentIndex: getCurrentSegmentIndex(clampedProgress, segments),
     });
     
     return true;
@@ -387,11 +416,27 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     const hasHistoryProgress = historyItem && historyItem.lastProgress > 0;
     const spotChanged = oldSpot && oldSpot.id !== newSpot.id;
     
+    const { segments } = buildRouteForSpot(plate, newSpot);
+    
+    set({
+      selectedPlate: plate,
+      selectedSpotId: newSpot.id,
+      selectedFloor: newSpot.floor,
+      availableWaypoints: getWaypointOptions(state.parkingSpots, newSpot),
+      navigation: {
+        ...state.navigation,
+        targetSpotId: newSpot.id,
+        plateNumber: plate,
+        segments,
+        totalDistance: state.navigation.totalDistance || 0,
+        distanceRemaining: state.navigation.distanceRemaining || 0,
+        pathPoints: state.navigation.pathPoints,
+        currentSegmentIndex: state.navigation.currentSegmentIndex,
+      },
+    });
+    
     if (hasHistoryProgress || spotChanged) {
       set({
-        selectedPlate: plate,
-        selectedSpotId: newSpot.id,
-        selectedFloor: newSpot.floor,
         continueDialog: {
           isOpen: true,
           plateNumber: plate,
@@ -425,6 +470,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     selectedPlate: null,
     selectedSpotId: null,
     continueDialog: initialContinueDialog,
+    selectedWaypoint: null,
   }),
 
   pauseNavigation: () => set((state) => ({
@@ -450,7 +496,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     
     const updatedHistory = state.searchHistory.map(h => 
       h.plateNumber === state.navigation.plateNumber
-        ? { ...h, lastProgress: clampedProgress }
+        ? { ...h, lastProgress: clampedProgress, lastSegmentIndex: segmentIndex }
         : h
     );
     
@@ -480,7 +526,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     
     const updatedHistory = state.searchHistory.map(h => 
       h.plateNumber === state.navigation.plateNumber
-        ? { ...h, lastProgress: newProgress }
+        ? { ...h, lastProgress: newProgress, lastSegmentIndex: segmentIndex }
         : h
     );
     
@@ -558,6 +604,8 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         selectedPlate: null, 
         selectedSpotId: null,
         navigation: state.navigation.isActive ? state.navigation : initialNavigationState,
+        availableWaypoints: [],
+        selectedWaypoint: null,
       };
     }
     
@@ -568,6 +616,8 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         selectedPlate: plate,
         selectedSpotId: null,
         navigation: state.navigation.isActive ? state.navigation : initialNavigationState,
+        availableWaypoints: [],
+        selectedWaypoint: null,
       };
     }
     
@@ -579,23 +629,25 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       };
     }
     
-    const pathPoints = generateNavigationPath(spot);
-    const { totalLength, points } = createSmoothPath(pathPoints);
-    const segments = generateNavigationSegments(spot, points, totalLength);
+    const waypoint = state.selectedWaypoint;
+    const { totalLength, segments, pathPoints } = buildRouteForSpot(plate, spot, waypoint);
+    const waypoints = getWaypointOptions(state.parkingSpots, spot);
     
     return {
       selectedPlate: plate,
       selectedSpotId: spot.id,
       selectedFloor: spot.floor,
+      availableWaypoints: waypoints,
       navigation: {
         ...initialNavigationState,
         targetSpotId: spot.id,
         plateNumber: plate,
         totalDistance: totalLength,
         distanceRemaining: totalLength,
-        pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
+        pathPoints,
         segments,
         currentSegmentIndex: 0,
+        waypoint,
       },
     };
   }),
@@ -641,10 +693,39 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       vehicleLeftEvent: null,
       continueDialog: initialContinueDialog,
       filterKeyword: '',
+      availableWaypoints: [],
+      selectedWaypoint: null,
     });
   },
 
   setFilterKeyword: (keyword) => set({ filterKeyword: keyword }),
+
+  setSelectedWaypoint: (waypoint) => set((state) => {
+    const plate = state.selectedPlate;
+    if (!plate) return { selectedWaypoint: waypoint };
+    
+    const spot = findSpotByPlate(state.parkingSpots, plate);
+    if (!spot || !spot.isOccupied) return { selectedWaypoint: waypoint };
+    
+    if (state.navigation.isActive) return { selectedWaypoint: waypoint };
+    
+    const { totalLength, segments, pathPoints } = buildRouteForSpot(plate, spot, waypoint);
+    
+    return {
+      selectedWaypoint: waypoint,
+      navigation: {
+        ...state.navigation,
+        targetSpotId: spot.id,
+        plateNumber: plate,
+        totalDistance: totalLength,
+        distanceRemaining: totalLength,
+        pathPoints,
+        segments,
+        currentSegmentIndex: 0,
+        waypoint,
+      },
+    };
+  }),
 }));
 
 export default useParkingStore;

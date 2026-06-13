@@ -16,9 +16,10 @@ export interface SearchHistoryItem {
   spotId: string;
   position: { x: number; y: number; z: number };
   lastProgress: number;
+  lastSegmentIndex: number;
 }
 
-export type NavigationSegmentType = 'floor' | 'aisle' | 'spot';
+export type NavigationSegmentType = 'floor' | 'aisle' | 'spot' | 'waypoint';
 
 export interface NavigationSegment {
   type: NavigationSegmentType;
@@ -28,6 +29,15 @@ export interface NavigationSegment {
   endProgress: number;
   startPoint: { x: number; y: number; z: number };
   endPoint: { x: number; y: number; z: number };
+}
+
+export interface WaypointInfo {
+  spotId: string;
+  name: string;
+  position: { x: number; y: number; z: number };
+  floor: number;
+  row: number;
+  col: number;
 }
 
 export interface NavigationState {
@@ -42,6 +52,7 @@ export interface NavigationState {
   progress: number;
   segments: NavigationSegment[];
   currentSegmentIndex: number;
+  waypoint: WaypointInfo | null;
 }
 
 export type CameraMode = 'orbit' | 'firstPerson';

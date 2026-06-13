@@ -1,10 +1,12 @@
-import { MapPin, Layers, Navigation, ChevronRight, CheckCircle } from 'lucide-react';
+import { useRef, useCallback } from 'react';
+import { MapPin, Layers, Navigation, ChevronRight, CheckCircle, Flag } from 'lucide-react';
 import useParkingStore from '@/store/parkingStore';
 import { FLOOR_NAMES, NavigationSegment } from '@/types/parking';
 import { cn } from '@/lib/utils';
 
 export default function NavigationHUD() {
-  const { navigation, selectedPlate } = useParkingStore();
+  const { navigation, selectedPlate, setNavigationProgress } = useParkingStore();
+  const progressBarRef = useRef<HTMLDivElement>(null);
   
   const progress = navigation.totalDistance > 0 
     ? ((navigation.totalDistance - navigation.distanceRemaining) / navigation.totalDistance) * 100
@@ -15,6 +17,7 @@ export default function NavigationHUD() {
       case 'floor': return <Layers className="w-4 h-4" />;
       case 'aisle': return <Navigation className="w-4 h-4" />;
       case 'spot': return <MapPin className="w-4 h-4" />;
+      case 'waypoint': return <Flag className="w-4 h-4" />;
       default: return <ChevronRight className="w-4 h-4" />;
     }
   };
@@ -27,6 +30,24 @@ export default function NavigationHUD() {
     const segmentCurrent = navigation.progress - segment.startProgress;
     return (segmentCurrent / segmentTotal) * 100;
   };
+
+  const handleProgressClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!progressBarRef.current || !navigation.isActive) return;
+    
+    const rect = progressBarRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, x / rect.width));
+    setNavigationProgress(ratio);
+  }, [navigation.isActive, setNavigationProgress]);
+
+  const handleProgressDrag = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.buttons !== 1 || !progressBarRef.current || !navigation.isActive) return;
+    
+    const rect = progressBarRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, x / rect.width));
+    setNavigationProgress(ratio);
+  }, [navigation.isActive, setNavigationProgress]);
 
   return (
     <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
@@ -74,13 +95,45 @@ export default function NavigationHUD() {
                 <div className="flex items-center gap-2">
                   <Navigation className="w-4 h-4 text-cyan-400" />
                   <span className="text-xs text-slate-400">导航进度</span>
+                  {navigation.isPaused && (
+                    <span className="text-[10px] text-yellow-400 bg-yellow-500/10 px-1.5 py-0.5 rounded">已暂停</span>
+                  )}
                 </div>
                 <span className="text-xs text-cyan-400 font-mono">{Math.round(progress)}%</span>
               </div>
-              <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+              <div 
+                ref={progressBarRef}
+                className="h-3 bg-slate-700 rounded-full overflow-hidden cursor-pointer relative"
+                onClick={handleProgressClick}
+                onMouseMove={handleProgressDrag}
+              >
+                {navigation.segments.map((segment, index) => {
+                  const left = segment.startProgress * 100;
+                  const width = (segment.endProgress - segment.startProgress) * 100;
+                  const segProgress = getSegmentProgress(segment);
+                  const isCompleted = navigation.progress >= segment.endProgress - 0.001;
+                  
+                  return (
+                    <div
+                      key={index}
+                      className="absolute top-0 h-full"
+                      style={{ left: `${left}%`, width: `${width}%` }}
+                    >
+                      <div 
+                        className={cn(
+                          "h-full transition-all duration-200",
+                          isCompleted ? "bg-green-500" :
+                          segment.type === 'waypoint' ? "bg-orange-500" :
+                          "bg-cyan-500"
+                        )}
+                        style={{ width: `${segProgress}%` }}
+                      />
+                    </div>
+                  );
+                })}
                 <div 
-                  className="h-full bg-gradient-to-r from-cyan-500 to-green-400 transition-all duration-300"
-                  style={{ width: `${progress}%` }}
+                  className="absolute top-0 w-1 h-full bg-white rounded-full shadow-lg shadow-white/50 transition-all duration-100"
+                  style={{ left: `${progress}%` }}
                 />
               </div>
             </div>
@@ -92,7 +145,6 @@ export default function NavigationHUD() {
                   {navigation.segments.map((segment, index) => {
                     const isCompleted = navigation.progress >= segment.endProgress - 0.001;
                     const isCurrent = navigation.currentSegmentIndex === index;
-                    const isUpcoming = index > navigation.currentSegmentIndex;
                     
                     return (
                       <div key={index} className="flex items-center flex-1">
@@ -102,6 +154,7 @@ export default function NavigationHUD() {
                               "relative p-2 rounded-lg border-2 transition-all",
                               isCompleted ? "bg-green-900/30 border-green-500/50" :
                               isCurrent ? "bg-cyan-900/40 border-cyan-500 shadow-lg shadow-cyan-500/20" :
+                              segment.type === 'waypoint' ? "bg-orange-900/20 border-orange-500/30" :
                               "bg-slate-800/50 border-slate-700/50"
                             )}
                           >
@@ -115,7 +168,8 @@ export default function NavigationHUD() {
                                 <div className={cn(
                                   "w-4 h-4 flex items-center justify-center",
                                   isCurrent ? "text-cyan-400" : 
-                                  isUpcoming ? "text-slate-500" : "text-slate-400"
+                                  segment.type === 'waypoint' ? "text-orange-400" :
+                                  "text-slate-500"
                                 )}>
                                   {getSegmentIcon(segment.type)}
                                 </div>
@@ -124,6 +178,7 @@ export default function NavigationHUD() {
                                 "text-xs font-semibold",
                                 isCompleted ? "text-green-400" :
                                 isCurrent ? "text-cyan-400" :
+                                segment.type === 'waypoint' ? "text-orange-400" :
                                 "text-slate-500"
                               )}>
                                 {segment.name}
@@ -135,6 +190,7 @@ export default function NavigationHUD() {
                                 className={cn(
                                   "h-full transition-all duration-300",
                                   isCompleted ? "bg-green-500" :
+                                  segment.type === 'waypoint' ? "bg-orange-500" :
                                   isCurrent ? "bg-cyan-500" : "bg-slate-600"
                                 )}
                                 style={{ width: `${getSegmentProgress(segment)}%` }}

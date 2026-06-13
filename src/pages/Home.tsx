@@ -12,7 +12,6 @@ import Toast, { ToastType } from '@/components/Toast';
 import useParkingStore from '@/store/parkingStore';
 import { useParkingSimulation } from '@/hooks/useParkingSimulation';
 import { findSpotByPlate } from '@/utils/parkingData';
-import { generateNavigationPath, createSmoothPath } from '@/utils/pathUtils';
 import { ParkingScene } from '@/engine/ParkingScene';
 import { ParkingSpot } from '@/types/parking';
 
@@ -25,7 +24,6 @@ export default function Home() {
     initializeSpots, 
     parkingSpots,
     selectedPlate,
-    setSelectedPlate,
     navigation,
     startNavigation,
     stopNavigation,
@@ -48,6 +46,8 @@ export default function Home() {
     setSelectedSpotId,
     updateNavigationPaused,
     setFilterKeyword,
+    continueNavigation,
+    setSelectedWaypoint,
   } = useParkingStore();
 
   useParkingSimulation(simRunning && simulationActive);
@@ -112,6 +112,7 @@ export default function Home() {
 
   const handleSearch = useCallback((plate: string) => {
     setFilterKeyword('');
+    setSelectedWaypoint(null);
     
     const spot = findSpotByPlate(parkingSpots, plate);
     
@@ -124,18 +125,26 @@ export default function Home() {
     if (success) {
       showToast(`已定位到 ${plate}，正在为您导航`, 'success');
     }
-  }, [parkingSpots, startNavigation, setFilterKeyword, showToast]);
+  }, [parkingSpots, startNavigation, setFilterKeyword, setSelectedWaypoint, showToast]);
 
   const handleStartNavigationFromOverview = useCallback(() => {
     if (selectedPlate) {
-      handleSearch(selectedPlate);
+      const spot = findSpotByPlate(parkingSpots, selectedPlate);
+      if (!spot || !spot.isOccupied) {
+        showToast(`车辆 ${selectedPlate} 已离开停车场`, 'warning');
+        return;
+      }
+      
+      const success = startNavigation(selectedPlate);
+      if (success) {
+        showToast(`已定位到 ${selectedPlate}，正在为您导航`, 'success');
+      }
     }
-  }, [selectedPlate, handleSearch]);
+  }, [selectedPlate, parkingSpots, startNavigation, showToast]);
 
   const handleHistorySelect = useCallback((plate: string) => {
-    const { continueNavigation } = useParkingStore.getState();
     continueNavigation(plate);
-  }, []);
+  }, [continueNavigation]);
 
   const handleToggleSimulation = useCallback(() => {
     setSimRunning(prev => !prev);
@@ -190,10 +199,9 @@ export default function Home() {
 
   const handleStopNav = useCallback(() => {
     stopNavigation();
-    setSelectedPlate(null);
-    setSelectedSpotId(null);
+    setSelectedWaypoint(null);
     showToast('导航已结束', 'info');
-  }, [stopNavigation, setSelectedPlate, setSelectedSpotId, showToast]);
+  }, [stopNavigation, setSelectedWaypoint, showToast]);
 
   const handleStepForward = useCallback(() => {
     stepNavigation('forward', 0.05);
