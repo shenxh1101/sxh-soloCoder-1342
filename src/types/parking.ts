@@ -17,17 +17,42 @@ export interface SearchHistoryItem {
   position: { x: number; y: number; z: number };
 }
 
+export type NavigationSegmentType = 'floor' | 'aisle' | 'spot';
+
+export interface NavigationSegment {
+  type: NavigationSegmentType;
+  name: string;
+  description: string;
+  startProgress: number;
+  endProgress: number;
+  startPoint: { x: number; y: number; z: number };
+  endPoint: { x: number; y: number; z: number };
+}
+
 export interface NavigationState {
   isActive: boolean;
+  isPaused: boolean;
   targetSpotId: string | null;
   plateNumber: string | null;
   currentFloor: number;
   distanceRemaining: number;
   totalDistance: number;
   pathPoints: Array<{ x: number; y: number; z: number }>;
+  progress: number;
+  segments: NavigationSegment[];
+  currentSegmentIndex: number;
 }
 
 export type CameraMode = 'orbit' | 'firstPerson';
+
+export type ContinueOption = 'continue' | 'restart';
+
+export interface ContinueNavigationDialogState {
+  isOpen: boolean;
+  plateNumber: string | null;
+  oldSpot: ParkingSpot | null;
+  newSpot: ParkingSpot | null;
+}
 
 export interface AppState {
   parkingSpots: ParkingSpot[];
@@ -36,6 +61,7 @@ export interface AppState {
   searchHistory: SearchHistoryItem[];
   simulationActive: boolean;
   selectedPlate: string | null;
+  continueDialog: ContinueNavigationDialogState;
 }
 
 export const PRESET_PLATES = [

@@ -6,6 +6,7 @@ import HistoryPanel from '@/components/HistoryPanel';
 import ControlPanel from '@/components/ControlPanel';
 import FloorPlan from '@/components/FloorPlan';
 import NavigationControls from '@/components/NavigationControls';
+import ContinueNavigationDialog from '@/components/ContinueNavigationDialog';
 import Toast, { ToastType } from '@/components/Toast';
 import useParkingStore from '@/store/parkingStore';
 import { useParkingSimulation } from '@/hooks/useParkingSimulation';
@@ -45,6 +46,7 @@ export default function Home() {
     selectedSpotId,
     setSelectedSpotId,
     updateNavigationPaused,
+    setFilterKeyword,
   } = useParkingStore();
 
   useParkingSimulation(simRunning && simulationActive);
@@ -63,7 +65,16 @@ export default function Home() {
 
   useEffect(() => {
     if (vehicleLeftEvent) {
-      showToast(`车辆 ${vehicleLeftEvent.plateNumber} 已离开停车场，导航已结束`, 'warning');
+      const { plateNumber, reason, oldSpot, newSpot } = vehicleLeftEvent;
+      
+      if (reason === 'left') {
+        showToast(`车辆 ${plateNumber} 已离开停车场，导航已结束`, 'warning');
+      } else if (reason === 'moved') {
+        const oldPos = oldSpot ? `${oldSpot.row}-${oldSpot.col}` : '原位置';
+        const newPos = newSpot ? `${newSpot.row}-${newSpot.col} (${newSpot.floor === 0 ? 'B1' : newSpot.floor === 1 ? 'B2' : 'B3'})` : '新位置';
+        showToast(`车辆 ${plateNumber} 已从 ${oldPos} 移动到 ${newPos}，导航已自动更新`, 'info');
+      }
+      
       clearVehicleLeftEvent();
     }
   }, [vehicleLeftEvent, showToast, clearVehicleLeftEvent]);
@@ -99,47 +110,20 @@ export default function Home() {
   }, [navigation.isActive, navigation.isPaused, scene, pauseNavigation, resumeNavigation, stepNavigation, updateNavigationPaused]);
 
   const handleSearch = useCallback((plate: string) => {
+    setFilterKeyword('');
+    
     const spot = findSpotByPlate(parkingSpots, plate);
     
     if (!spot || !spot.isOccupied) {
       showToast(`车辆 ${plate} 已离开停车场`, 'warning');
-      stopNavigation();
-      setSelectedPlate(null);
-      setSelectedSpotId(null);
       return;
     }
     
-    setSelectedPlate(plate);
-    startNavigation(plate);
-    
-    const pathPoints = generateNavigationPath(spot);
-    const { totalLength } = createSmoothPath(pathPoints);
-    
-    useParkingStore.setState((state) => ({
-      navigation: {
-        ...state.navigation,
-        isActive: true,
-        isPaused: false,
-        progress: 0,
-        targetSpotId: spot.id,
-        plateNumber: plate,
-        totalDistance: totalLength,
-        distanceRemaining: totalLength,
-        currentFloor: 0,
-      },
-      selectedFloor: spot.floor,
-    }));
-    
-    addSearchHistory({
-      plateNumber: plate,
-      timestamp: Date.now(),
-      floor: spot.floor,
-      spotId: spot.id,
-      position: { ...spot.position },
-    });
-    
-    showToast(`已定位到 ${plate}，正在为您导航`, 'success');
-  }, [parkingSpots, startNavigation, stopNavigation, setSelectedPlate, setSelectedSpotId, addSearchHistory, showToast]);
+    const success = startNavigation(plate);
+    if (success) {
+      showToast(`已定位到 ${plate}，正在为您导航`, 'success');
+    }
+  }, [parkingSpots, startNavigation, setFilterKeyword, showToast]);
 
   const handleHistorySelect = useCallback((plate: string) => {
     handleSearch(plate);
@@ -229,8 +213,9 @@ export default function Home() {
     setSelectedPlate(null);
     setSelectedSpotId(null);
     stopNavigation();
+    setFilterKeyword('');
     showToast('停车场已重置，所有车位状态已重新生成', 'success');
-  }, [initializeSpots, setSelectedPlate, setSelectedSpotId, stopNavigation, showToast]);
+  }, [initializeSpots, setSelectedPlate, setSelectedSpotId, stopNavigation, setFilterKeyword, showToast]);
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-slate-950">
@@ -262,6 +247,7 @@ export default function Home() {
         onSpotNavigate={handleSpotNavigate}
         onFloorChange={handleFloorChange}
       />
+      <ContinueNavigationDialog />
       
       <div className="absolute bottom-20 left-4 z-20">
         <div className="bg-slate-900/80 backdrop-blur-md rounded-lg px-3 py-2 border border-slate-700/50 text-xs text-slate-400">

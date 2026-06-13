@@ -1,6 +1,7 @@
-import { MapPin, Layers, Navigation } from 'lucide-react';
+import { MapPin, Layers, Navigation, ChevronRight, CheckCircle } from 'lucide-react';
 import useParkingStore from '@/store/parkingStore';
-import { FLOOR_NAMES } from '@/types/parking';
+import { FLOOR_NAMES, NavigationSegment } from '@/types/parking';
+import { cn } from '@/lib/utils';
 
 export default function NavigationHUD() {
   const { navigation, selectedPlate } = useParkingStore();
@@ -8,6 +9,24 @@ export default function NavigationHUD() {
   const progress = navigation.totalDistance > 0 
     ? ((navigation.totalDistance - navigation.distanceRemaining) / navigation.totalDistance) * 100
     : 0;
+
+  const getSegmentIcon = (type: string) => {
+    switch (type) {
+      case 'floor': return <Layers className="w-4 h-4" />;
+      case 'aisle': return <Navigation className="w-4 h-4" />;
+      case 'spot': return <MapPin className="w-4 h-4" />;
+      default: return <ChevronRight className="w-4 h-4" />;
+    }
+  };
+
+  const getSegmentProgress = (segment: NavigationSegment) => {
+    if (navigation.progress < segment.startProgress) return 0;
+    if (navigation.progress >= segment.endProgress) return 100;
+    
+    const segmentTotal = segment.endProgress - segment.startProgress;
+    const segmentCurrent = navigation.progress - segment.startProgress;
+    return (segmentCurrent / segmentTotal) * 100;
+  };
 
   return (
     <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
@@ -49,18 +68,102 @@ export default function NavigationHUD() {
         </div>
         
         {navigation.isActive && (
-          <div className="mt-3">
-            <div className="flex justify-between text-xs text-slate-400 mb-1">
-              <span>导航进度</span>
-              <span>{Math.round(progress)}%</span>
+          <>
+            <div className="mt-4 pt-3 border-t border-slate-700/50">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <Navigation className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs text-slate-400">导航进度</span>
+                </div>
+                <span className="text-xs text-cyan-400 font-mono">{Math.round(progress)}%</span>
+              </div>
+              <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-gradient-to-r from-cyan-500 to-green-400 transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
             </div>
-            <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-gradient-to-r from-cyan-500 to-green-400 transition-all duration-300"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          </div>
+            
+            {navigation.segments.length > 0 && (
+              <div className="mt-4 pt-3 border-t border-slate-700/50">
+                <div className="text-xs text-slate-400 mb-3">当前路段</div>
+                <div className="flex items-center gap-2">
+                  {navigation.segments.map((segment, index) => {
+                    const isCompleted = navigation.progress >= segment.endProgress - 0.001;
+                    const isCurrent = navigation.currentSegmentIndex === index;
+                    const isUpcoming = index > navigation.currentSegmentIndex;
+                    
+                    return (
+                      <div key={index} className="flex items-center flex-1">
+                        <div className="flex-1">
+                          <div 
+                            className={cn(
+                              "relative p-2 rounded-lg border-2 transition-all",
+                              isCompleted ? "bg-green-900/30 border-green-500/50" :
+                              isCurrent ? "bg-cyan-900/40 border-cyan-500 shadow-lg shadow-cyan-500/20" :
+                              "bg-slate-800/50 border-slate-700/50"
+                            )}
+                          >
+                            <div className="flex items-center gap-1.5 mb-1">
+                              {isCompleted ? (
+                                <CheckCircle className={cn(
+                                  "w-4 h-4",
+                                  isCurrent ? "text-cyan-400" : "text-green-400"
+                                )} />
+                              ) : (
+                                <div className={cn(
+                                  "w-4 h-4 flex items-center justify-center",
+                                  isCurrent ? "text-cyan-400" : 
+                                  isUpcoming ? "text-slate-500" : "text-slate-400"
+                                )}>
+                                  {getSegmentIcon(segment.type)}
+                                </div>
+                              )}
+                              <span className={cn(
+                                "text-xs font-semibold",
+                                isCompleted ? "text-green-400" :
+                                isCurrent ? "text-cyan-400" :
+                                "text-slate-500"
+                              )}>
+                                {segment.name}
+                              </span>
+                            </div>
+                            
+                            <div className="h-1 bg-slate-700 rounded-full overflow-hidden">
+                              <div 
+                                className={cn(
+                                  "h-full transition-all duration-300",
+                                  isCompleted ? "bg-green-500" :
+                                  isCurrent ? "bg-cyan-500" : "bg-slate-600"
+                                )}
+                                style={{ width: `${getSegmentProgress(segment)}%` }}
+                              />
+                            </div>
+                            
+                            {isCurrent && (
+                              <div className="mt-1.5 text-[10px] text-cyan-300">
+                                {segment.description}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        
+                        {index < navigation.segments.length - 1 && (
+                          <div className="px-1">
+                            <ChevronRight className={cn(
+                              "w-4 h-4",
+                              isCompleted ? "text-green-500" : "text-slate-600"
+                            )} />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

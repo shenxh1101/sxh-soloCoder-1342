@@ -1,11 +1,26 @@
 import { create } from 'zustand';
-import { AppState, ParkingSpot, SearchHistoryItem, CameraMode } from '@/types/parking';
+import { 
+  AppState, 
+  ParkingSpot, 
+  SearchHistoryItem, 
+  CameraMode,
+  NavigationSegment,
+  ContinueOption,
+} from '@/types/parking';
 import { generateParkingSpots, findSpotByPlate } from '@/utils/parkingData';
-import { generateNavigationPath, createSmoothPath } from '@/utils/pathUtils';
+import { 
+  generateNavigationPath, 
+  createSmoothPath,
+  generateNavigationSegments,
+  getCurrentSegmentIndex,
+} from '@/utils/pathUtils';
 
 interface VehicleLeftEvent {
   plateNumber: string;
   timestamp: number;
+  reason: 'left' | 'moved';
+  oldSpot?: ParkingSpot;
+  newSpot?: ParkingSpot;
 }
 
 export interface NavigationState {
@@ -18,6 +33,8 @@ export interface NavigationState {
   totalDistance: number;
   pathPoints: Array<{ x: number; y: number; z: number }>;
   progress: number;
+  segments: NavigationSegment[];
+  currentSegmentIndex: number;
 }
 
 interface StoreState extends AppState {
@@ -25,14 +42,18 @@ interface StoreState extends AppState {
   vehicleLeftEvent: VehicleLeftEvent | null;
   selectedFloor: number;
   selectedSpotId: string | null;
+  filterKeyword: string;
 }
 
 interface StoreActions {
   initializeSpots: () => void;
   setParkingSpots: (spots: ParkingSpot[], preserveNavigation?: boolean) => void;
   updateSpot: (spotId: string, updates: Partial<ParkingSpot>) => void;
-  startNavigation: (plateNumber: string) => boolean;
-  startNavigationBySpotId: (spotId: string) => boolean;
+  startNavigation: (plateNumber: string, startProgress?: number) => boolean;
+  startNavigationBySpotId: (spotId: string, startProgress?: number) => boolean;
+  continueNavigation: (plate: string) => Promise<ContinueOption | null>;
+  handleContinueNavigation: (plate: string, option: ContinueOption) => void;
+  closeContinueDialog: () => void;
   stopNavigation: () => void;
   pauseNavigation: () => void;
   resumeNavigation: () => void;
@@ -43,6 +64,7 @@ interface StoreActions {
   updateNavigationDistance: (distance: number) => void;
   updateNavigationFloor: (floor: number) => void;
   updateNavigationPaused: (isPaused: boolean) => void;
+  updateNavigationSegment: () => void;
   completeNavigation: () => void;
   setCameraMode: (mode: CameraMode) => void;
   toggleCameraMode: () => void;
@@ -55,6 +77,7 @@ interface StoreActions {
   setSelectedSpotId: (spotId: string | null) => void;
   focusOnSpot: (spotId: string) => void;
   resetAllState: () => void;
+  setFilterKeyword: (keyword: string) => void;
 }
 
 const initialNavigationState: NavigationState = {
@@ -67,6 +90,15 @@ const initialNavigationState: NavigationState = {
   totalDistance: 0,
   pathPoints: [],
   progress: 0,
+  segments: [],
+  currentSegmentIndex: 0,
+};
+
+const initialContinueDialog = {
+  isOpen: false,
+  plateNumber: null,
+  oldSpot: null,
+  newSpot: null,
 };
 
 const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
@@ -79,6 +111,8 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
   vehicleLeftEvent: null,
   selectedFloor: 0,
   selectedSpotId: null,
+  filterKeyword: '',
+  continueDialog: initialContinueDialog,
 
   initializeSpots: () => {
     const spots = generateParkingSpots();
@@ -88,31 +122,85 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
   setParkingSpots: (spots, preserveNavigation = false) => {
     const state = get();
     let newNav = { ...state.navigation };
+    let vehicleEvent: VehicleLeftEvent | null = null;
+    let newSelectedPlate = state.selectedPlate;
+    let newSelectedSpotId = state.selectedSpotId;
+    let newSelectedFloor = state.selectedFloor;
     
-    if (!preserveNavigation && state.navigation.isActive) {
-      const targetSpot = spots.find(s => s.id === state.navigation.targetSpotId);
-      if (!targetSpot || !targetSpot.isOccupied || targetSpot.plateNumber !== state.navigation.plateNumber) {
+    if (state.navigation.isActive && state.navigation.plateNumber) {
+      const plate = state.navigation.plateNumber;
+      const newSpot = findSpotByPlate(spots, plate);
+      const oldSpot = state.parkingSpots.find(s => s.id === state.navigation.targetSpotId);
+      
+      if (!newSpot || !newSpot.isOccupied) {
         newNav = { ...initialNavigationState };
+        vehicleEvent = {
+          plateNumber: plate,
+          timestamp: Date.now(),
+          reason: 'left',
+          oldSpot: oldSpot || undefined,
+        };
+        newSelectedPlate = null;
+        newSelectedSpotId = null;
+      } else if (newSpot.id !== state.navigation.targetSpotId) {
+        const pathPoints = generateNavigationPath(newSpot);
+        const { totalLength, points } = createSmoothPath(pathPoints);
+        const segments = generateNavigationSegments(newSpot, points, totalLength);
+        const currentProgress = state.navigation.progress;
+        
+        newNav = {
+          ...state.navigation,
+          targetSpotId: newSpot.id,
+          totalDistance: totalLength,
+          distanceRemaining: totalLength * (1 - currentProgress),
+          pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
+          segments,
+          currentSegmentIndex: getCurrentSegmentIndex(currentProgress, segments),
+        };
+        newSelectedSpotId = newSpot.id;
+        newSelectedFloor = newSpot.floor;
+        vehicleEvent = {
+          plateNumber: plate,
+          timestamp: Date.now(),
+          reason: 'moved',
+          oldSpot: oldSpot || undefined,
+          newSpot,
+        };
       }
-    }
-    
-    if (state.selectedPlate) {
-      const spot = findSpotByPlate(spots, state.selectedPlate);
-      if (!spot || !spot.isOccupied) {
-        set({
-          selectedPlate: null,
-          selectedSpotId: null,
-          vehicleLeftEvent: {
-            plateNumber: state.selectedPlate,
-            timestamp: Date.now(),
-          },
-        });
+    } else if (state.selectedPlate) {
+      const plate = state.selectedPlate;
+      const newSpot = findSpotByPlate(spots, plate);
+      const oldSpot = findSpotByPlate(state.parkingSpots, plate);
+      
+      if (!newSpot || !newSpot.isOccupied) {
+        vehicleEvent = {
+          plateNumber: plate,
+          timestamp: Date.now(),
+          reason: 'left',
+          oldSpot: oldSpot || undefined,
+        };
+        newSelectedPlate = null;
+        newSelectedSpotId = null;
+      } else if (oldSpot && newSpot.id !== oldSpot.id) {
+        newSelectedSpotId = newSpot.id;
+        newSelectedFloor = newSpot.floor;
+        vehicleEvent = {
+          plateNumber: plate,
+          timestamp: Date.now(),
+          reason: 'moved',
+          oldSpot,
+          newSpot,
+        };
       }
     }
     
     set({
       parkingSpots: spots,
       navigation: newNav,
+      selectedPlate: newSelectedPlate,
+      selectedSpotId: newSelectedSpotId,
+      selectedFloor: newSelectedFloor,
+      vehicleLeftEvent: vehicleEvent,
     });
   },
 
@@ -123,36 +211,93 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     );
     
     const nav = state.navigation;
-    if (nav.isActive && nav.targetSpotId === spotId && updates.isOccupied === false) {
-      const plate = spot?.plateNumber || nav.plateNumber || '';
-      return {
-        parkingSpots: spots,
-        navigation: { ...initialNavigationState },
-        selectedPlate: null,
-        selectedSpotId: null,
-        vehicleLeftEvent: {
-          plateNumber: plate,
-          timestamp: Date.now(),
-        },
-      };
+    let vehicleEvent: VehicleLeftEvent | null = null;
+    let newNav = { ...nav };
+    let newSelectedPlate = state.selectedPlate;
+    let newSelectedSpotId = state.selectedSpotId;
+    let newSelectedFloor = state.selectedFloor;
+    
+    if (nav.isActive && nav.plateNumber) {
+      if (nav.targetSpotId === spotId && updates.isOccupied === false) {
+        const plate = spot?.plateNumber || nav.plateNumber;
+        const updatedSpot = spots.find(s => s.id === spotId);
+        const newSpot = findSpotByPlate(spots, plate);
+        
+        if (newSpot && newSpot.isOccupied && newSpot.id !== spotId) {
+          const pathPoints = generateNavigationPath(newSpot);
+          const { totalLength, points } = createSmoothPath(pathPoints);
+          const segments = generateNavigationSegments(newSpot, points, totalLength);
+          const currentProgress = nav.progress;
+          
+          newNav = {
+            ...nav,
+            targetSpotId: newSpot.id,
+            totalDistance: totalLength,
+            distanceRemaining: totalLength * (1 - currentProgress),
+            pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
+            segments,
+            currentSegmentIndex: getCurrentSegmentIndex(currentProgress, segments),
+          };
+          newSelectedSpotId = newSpot.id;
+          newSelectedFloor = newSpot.floor;
+          vehicleEvent = {
+            plateNumber: plate,
+            timestamp: Date.now(),
+            reason: 'moved',
+            oldSpot: updatedSpot || undefined,
+            newSpot,
+          };
+        } else {
+          newNav = { ...initialNavigationState };
+          vehicleEvent = {
+            plateNumber: plate,
+            timestamp: Date.now(),
+            reason: 'left',
+            oldSpot: updatedSpot || undefined,
+          };
+          newSelectedPlate = null;
+          newSelectedSpotId = null;
+        }
+      }
     }
     
     if (state.selectedPlate && spot?.plateNumber === state.selectedPlate && updates.isOccupied === false) {
-      return {
-        parkingSpots: spots,
-        selectedPlate: null,
-        selectedSpotId: null,
-        vehicleLeftEvent: {
-          plateNumber: state.selectedPlate,
+      const plate = state.selectedPlate;
+      const newSpot = findSpotByPlate(spots, plate);
+      
+      if (newSpot && newSpot.isOccupied) {
+        newSelectedSpotId = newSpot.id;
+        newSelectedFloor = newSpot.floor;
+        vehicleEvent = {
+          plateNumber: plate,
           timestamp: Date.now(),
-        },
-      };
+          reason: 'moved',
+          oldSpot: spot || undefined,
+          newSpot,
+        };
+      } else {
+        vehicleEvent = {
+          plateNumber: plate,
+          timestamp: Date.now(),
+          reason: 'left',
+          oldSpot: spot || undefined,
+        };
+        newSelectedPlate = null;
+        newSelectedSpotId = null;
+      }
     }
     
-    return { parkingSpots: spots };
+    return {
+      parkingSpots: spots,
+      navigation: newNav,
+      selectedPlate: newSelectedPlate,
+      selectedSpotId: newSelectedSpotId,
+      selectedFloor: newSelectedFloor,
+      vehicleLeftEvent: vehicleEvent,
+    };
   }),
 
-  startNavigation: (plateNumber) => {
+  startNavigation: (plateNumber, startProgress = 0) => {
     const state = get();
     const spot = findSpotByPlate(state.parkingSpots, plateNumber);
     
@@ -163,6 +308,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         vehicleLeftEvent: {
           plateNumber,
           timestamp: Date.now(),
+          reason: 'left',
         },
       });
       return false;
@@ -170,21 +316,27 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     
     const pathPoints = generateNavigationPath(spot);
     const { totalLength, points } = createSmoothPath(pathPoints);
+    const segments = generateNavigationSegments(spot, points, totalLength);
+    const clampedProgress = Math.max(0, Math.min(1, startProgress));
+    const distanceRemaining = totalLength * (1 - clampedProgress);
     
     set({
       selectedPlate: plateNumber,
       selectedSpotId: spot.id,
       selectedFloor: spot.floor,
+      continueDialog: initialContinueDialog,
       navigation: {
         isActive: true,
         isPaused: false,
         targetSpotId: spot.id,
         plateNumber,
         currentFloor: 0,
-        distanceRemaining: totalLength,
+        distanceRemaining,
         totalDistance: totalLength,
         pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
-        progress: 0,
+        progress: clampedProgress,
+        segments,
+        currentSegmentIndex: getCurrentSegmentIndex(clampedProgress, segments),
       },
     });
     
@@ -199,7 +351,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     return true;
   },
 
-  startNavigationBySpotId: (spotId) => {
+  startNavigationBySpotId: (spotId, startProgress = 0) => {
     const state = get();
     const spot = state.parkingSpots.find(s => s.id === spotId);
     
@@ -207,13 +359,64 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       return false;
     }
     
-    return get().startNavigation(spot.plateNumber);
+    return get().startNavigation(spot.plateNumber, startProgress);
+  },
+
+  continueNavigation: async (plate) => {
+    const state = get();
+    const newSpot = findSpotByPlate(state.parkingSpots, plate);
+    
+    if (!newSpot || !newSpot.isOccupied) {
+      set({
+        vehicleLeftEvent: {
+          plateNumber: plate,
+          timestamp: Date.now(),
+          reason: 'left',
+        },
+      });
+      return null;
+    }
+    
+    const historyItem = state.searchHistory.find(h => h.plateNumber === plate);
+    const oldSpot = historyItem 
+      ? state.parkingSpots.find(s => s.id === historyItem.spotId)
+      : null;
+    
+    if (oldSpot && oldSpot.id !== newSpot.id && state.navigation.isActive) {
+      set({
+        continueDialog: {
+          isOpen: true,
+          plateNumber: plate,
+          oldSpot,
+          newSpot,
+        },
+      });
+      return null;
+    }
+    
+    const currentProgress = state.navigation.isActive ? state.navigation.progress : 0;
+    get().startNavigation(plate, currentProgress);
+    return 'continue';
+  },
+
+  handleContinueNavigation: (plate, option) => {
+    const state = get();
+    const startProgress = option === 'continue' && state.navigation.isActive 
+      ? state.navigation.progress 
+      : 0;
+    
+    get().startNavigation(plate, startProgress);
+  },
+
+  closeContinueDialog: () => {
+    set({ continueDialog: initialContinueDialog });
   },
 
   stopNavigation: () => set({
     navigation: { ...initialNavigationState },
     selectedPlate: null,
     selectedSpotId: null,
+    continueDialog: initialContinueDialog,
   }),
 
   pauseNavigation: () => set((state) => ({
@@ -235,6 +438,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     const pointIndex = Math.floor(clampedProgress * (points.length - 1));
     const point = points[pointIndex] || points[0];
     const currentFloor = point ? Math.round(point.y / 3.5) : 0;
+    const segmentIndex = getCurrentSegmentIndex(clampedProgress, state.navigation.segments);
     
     return {
       navigation: {
@@ -242,6 +446,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         progress: clampedProgress,
         distanceRemaining,
         currentFloor: Math.min(Math.max(currentFloor, 0), 2),
+        currentSegmentIndex: segmentIndex,
       },
     };
   }),
@@ -256,6 +461,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     const pointIndex = Math.floor(newProgress * (points.length - 1));
     const point = points[pointIndex] || points[0];
     const currentFloor = point ? Math.round(point.y / 3.5) : 0;
+    const segmentIndex = getCurrentSegmentIndex(newProgress, state.navigation.segments);
     
     return {
       navigation: {
@@ -263,6 +469,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         progress: newProgress,
         distanceRemaining,
         currentFloor: Math.min(Math.max(currentFloor, 0), 2),
+        currentSegmentIndex: segmentIndex,
       },
     };
   }),
@@ -293,6 +500,13 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     navigation: {
       ...state.navigation,
       isPaused,
+    },
+  })),
+
+  updateNavigationSegment: () => set((state) => ({
+    navigation: {
+      ...state.navigation,
+      currentSegmentIndex: getCurrentSegmentIndex(state.navigation.progress, state.navigation.segments),
     },
   })),
 
@@ -368,8 +582,12 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       selectedSpotId: null,
       selectedFloor: 0,
       vehicleLeftEvent: null,
+      continueDialog: initialContinueDialog,
+      filterKeyword: '',
     });
   },
+
+  setFilterKeyword: (keyword) => set({ filterKeyword: keyword }),
 }));
 
 export default useParkingStore;

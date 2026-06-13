@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { History, X, MapPin, Clock, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
+import { History, X, MapPin, Clock, ChevronLeft, ChevronRight, Trash2, RefreshCw, AlertCircle, Car } from 'lucide-react';
 import useParkingStore from '@/store/parkingStore';
 import { FLOOR_NAMES } from '@/types/parking';
+import { findSpotByPlate } from '@/utils/parkingData';
+import { cn } from '@/lib/utils';
 
 interface HistoryPanelProps {
   onSelectPlate: (plate: string) => void;
@@ -9,15 +11,39 @@ interface HistoryPanelProps {
 
 export default function HistoryPanel({ onSelectPlate }: HistoryPanelProps) {
   const [isOpen, setIsOpen] = useState(true);
-  const { searchHistory, clearHistory } = useParkingStore();
+  const { 
+    searchHistory, 
+    clearHistory, 
+    parkingSpots,
+    continueNavigation,
+    navigation,
+  } = useParkingStore();
 
   const formatTime = (timestamp: number) => {
     const date = new Date(timestamp);
     return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   };
 
-  const handleSelect = (plate: string) => {
-    onSelectPlate(plate);
+  const getCurrentSpotForPlate = (plate: string) => {
+    return findSpotByPlate(parkingSpots, plate);
+  };
+
+  const handleSelect = async (plate: string) => {
+    const currentSpot = getCurrentSpotForPlate(plate);
+    
+    if (!currentSpot || !currentSpot.isOccupied) {
+      onSelectPlate(plate);
+      return;
+    }
+    
+    const historyItem = searchHistory.find(h => h.plateNumber === plate);
+    const hasMoved = historyItem && historyItem.spotId !== currentSpot.id;
+    
+    if (hasMoved && navigation.isActive) {
+      await continueNavigation(plate);
+    } else {
+      await continueNavigation(plate);
+    }
   };
 
   return (
@@ -55,35 +81,85 @@ export default function HistoryPanel({ onSelectPlate }: HistoryPanelProps) {
             </div>
           ) : (
             <div className="p-2 space-y-2">
-              {searchHistory.map((item, index) => (
-                <button
-                  key={`${item.plateNumber}-${item.timestamp}`}
-                  onClick={() => handleSelect(item.plateNumber)}
-                  className="w-full p-3 bg-slate-800/50 hover:bg-slate-700/50 rounded-lg text-left transition-colors group"
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-mono text-cyan-300 font-semibold">
-                      {item.plateNumber}
-                    </span>
-                    <span className="text-xs text-slate-500">
-                      {formatTime(item.timestamp)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-slate-400">
-                    <span className="flex items-center gap-1">
-                      <MapPin className="w-3 h-3" />
-                      {FLOOR_NAMES[item.floor]}
-                    </span>
-                    <span className="text-slate-600">|</span>
-                    <span>{item.spotId}</span>
-                  </div>
-                  <div className="mt-2 text-xs text-orange-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                    点击重新导航 →
-                  </div>
-                </button>
-              ))}
+              {searchHistory.map((item, index) => {
+                const currentSpot = getCurrentSpotForPlate(item.plateNumber);
+                const isCurrentlyParked = currentSpot?.isOccupied;
+                const hasMoved = isCurrentlyParked && currentSpot && item.spotId !== currentSpot.id;
+                
+                return (
+                  <button
+                    key={`${item.plateNumber}-${item.timestamp}`}
+                    onClick={() => handleSelect(item.plateNumber)}
+                    className="w-full p-3 bg-slate-800/50 hover:bg-slate-700/50 rounded-lg text-left transition-colors group"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <span className={cn(
+                        "font-mono font-semibold",
+                        isCurrentlyParked ? 'text-cyan-300' : 'text-slate-500 line-through'
+                      )}>
+                        {item.plateNumber}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-500">
+                          {formatTime(item.timestamp)}
+                        </span>
+                        {!isCurrentlyParked && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-400 flex items-center gap-0.5">
+                            <AlertCircle className="w-3 h-3" />
+                            离场
+                          </span>
+                        )}
+                        {hasMoved && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/50 text-yellow-400 flex items-center gap-0.5">
+                            <RefreshCw className="w-3 h-3" />
+                            已移位
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-3 text-xs text-slate-400 mb-2">
+                      <span className="flex items-center gap-1">
+                        <MapPin className="w-3 h-3" />
+                        {FLOOR_NAMES[item.floor]} {item.spotId}
+                      </span>
+                    </div>
+                    
+                    {hasMoved && currentSpot && (
+                      <div className="mt-2 p-2 bg-yellow-900/20 rounded border border-yellow-500/30">
+                        <div className="flex items-center gap-1.5 text-xs text-yellow-400 mb-1">
+                          <RefreshCw className="w-3 h-3" />
+                          <span>车辆已移动到新位置</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                          <span className="line-through">{item.spotId}</span>
+                          <span>→</span>
+                          <span className="text-yellow-300 font-mono">{currentSpot.row}-{currentSpot.col}</span>
+                          <span className="text-yellow-400">({FLOOR_NAMES[currentSpot.floor]})</span>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {isCurrentlyParked && (
+                      <div className="mt-2 flex items-center justify-between">
+                        <div className="flex items-center gap-1 text-[10px] text-green-400">
+                          <Car className="w-3 h-3" />
+                          <span>当前位置: {FLOOR_NAMES[currentSpot!.floor]} {currentSpot!.row}-{currentSpot!.col}</span>
+                        </div>
+                        <div className="text-xs text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                          点击继续导航 →
+                        </div>
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
+        </div>
+        
+        <div className="px-4 py-2 border-t border-slate-700/50 text-[10px] text-slate-500 text-center">
+          点击历史记录可继续导航
         </div>
       </div>
     </div>

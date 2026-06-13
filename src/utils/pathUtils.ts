@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ParkingSpot } from '@/types/parking';
+import { ParkingSpot, NavigationSegment, FLOOR_NAMES } from '@/types/parking';
 import { ENTRANCE_POSITION, getRampPosition, FLOOR_HEIGHT, PARKING_LENGTH, PARKING_WIDTH } from './parkingData';
 
 export function generateNavigationPath(targetSpot: ParkingSpot): THREE.Vector3[] {
@@ -59,6 +59,87 @@ export function generateNavigationPath(targetSpot: ParkingSpot): THREE.Vector3[]
   points.push(targetPos);
   
   return points;
+}
+
+export function generateNavigationSegments(
+  targetSpot: ParkingSpot,
+  pathPoints: THREE.Vector3[],
+  totalLength: number
+): NavigationSegment[] {
+  const segments: NavigationSegment[] = [];
+  
+  const pointToObj = (p: THREE.Vector3) => ({ x: p.x, y: p.y, z: p.z });
+  
+  const points = generateNavigationPath(targetSpot);
+  
+  const getProgressForPointIndex = (index: number): number => {
+    if (index <= 0) return 0;
+    if (index >= pathPoints.length - 1) return 1;
+    
+    const t = index / (points.length - 1);
+    const smoothIndex = Math.floor(t * (pathPoints.length - 1));
+    return smoothIndex / (pathPoints.length - 1);
+  };
+  
+  segments.push({
+    type: 'floor',
+    name: `前往 ${FLOOR_NAMES[targetSpot.floor]} 层`,
+    description: targetSpot.floor === 0 ? '沿通道前往B1层停车区域' : `沿坡道前往 ${FLOOR_NAMES[targetSpot.floor]}`,
+    startProgress: 0,
+    endProgress: getProgressForPointIndex(targetSpot.floor === 0 ? 2 : 2 + targetSpot.floor * 4),
+    startPoint: pointToObj(points[0]),
+    endPoint: pointToObj(points[targetSpot.floor === 0 ? 2 : 2 + targetSpot.floor * 4]),
+  });
+  
+  const aisleStartIndex = targetSpot.floor === 0 ? 2 : 2 + targetSpot.floor * 4;
+  const aisleEndIndex = aisleStartIndex + 1;
+  
+  segments.push({
+    type: 'aisle',
+    name: '前往通道口',
+    description: `前往 ${targetSpot.row} 号通道`,
+    startProgress: getProgressForPointIndex(aisleStartIndex),
+    endProgress: getProgressForPointIndex(aisleEndIndex + 1),
+    startPoint: pointToObj(points[aisleStartIndex]),
+    endPoint: pointToObj(points[aisleEndIndex + 1]),
+  });
+  
+  const spotStartIndex = aisleEndIndex + 1;
+  segments.push({
+    type: 'spot',
+    name: '前往目标车位',
+    description: `${targetSpot.row}-${targetSpot.col} 号车位`,
+    startProgress: getProgressForPointIndex(spotStartIndex),
+    endProgress: 1,
+    startPoint: pointToObj(points[spotStartIndex]),
+    endPoint: pointToObj(points[points.length - 1]),
+  });
+  
+  return segments;
+}
+
+export function getCurrentSegment(
+  progress: number,
+  segments: NavigationSegment[]
+): NavigationSegment | null {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (progress >= segments[i].startProgress - 0.001) {
+      return segments[i];
+    }
+  }
+  return segments[0] || null;
+}
+
+export function getCurrentSegmentIndex(
+  progress: number,
+  segments: NavigationSegment[]
+): number {
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (progress >= segments[i].startProgress - 0.001) {
+      return i;
+    }
+  }
+  return 0;
 }
 
 export function createSmoothPath(points: THREE.Vector3[], segments: number = 200): {
