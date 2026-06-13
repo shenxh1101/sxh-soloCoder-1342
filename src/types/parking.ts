@@ -15,6 +15,7 @@ export interface SearchHistoryItem {
   floor: number;
   spotId: string;
   position: { x: number; y: number; z: number };
+  lastProgress: number;
 }
 
 export type NavigationSegmentType = 'floor' | 'aisle' | 'spot';

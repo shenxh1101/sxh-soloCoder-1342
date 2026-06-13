@@ -535,15 +535,16 @@ export class ParkingScene {
     this.scene.add(this.highlightMesh);
   }
 
-  public startNavigation(spot: ParkingSpot) {
+  public startNavigation(spot: ParkingSpot, startProgress: number = 0) {
     this.targetSpot = spot;
+    const clampedProgress = Math.max(0, Math.min(1, startProgress));
     this.navigationState = {
       isActive: true,
       isPaused: false,
-      progress: 0,
+      progress: clampedProgress,
       targetSpotId: spot.id,
     };
-    this.navigationProgress = 0;
+    this.navigationProgress = clampedProgress;
     
     const pathPoints = generateNavigationPath(spot);
     const { curve, totalLength } = createSmoothPath(pathPoints);
@@ -552,14 +553,33 @@ export class ParkingScene {
     
     this.createNavigationLine(curve);
     
+    const startPosition = curve.getPoint(clampedProgress);
+    
     if (this.cameraMode === 'firstPerson') {
-      this.camera.position.copy(ENTRANCE_POSITION);
+      this.camera.position.copy(startPosition);
       this.camera.position.y = 1.7;
+      
+      const nextPoint = curve.getPoint(Math.min(clampedProgress + 0.01, 1));
+      const direction = new THREE.Vector3().subVectors(nextPoint, startPosition).normalize();
+      this.camera.lookAt(startPosition.clone().add(direction));
+      
+      const dir = new THREE.Vector3();
+      this.camera.getWorldDirection(dir);
+      this.yaw = Math.atan2(dir.x, dir.z);
+      this.pitch = Math.asin(dir.y);
+    } else {
+      this.orbitControls.target.copy(startPosition);
+      this.orbitControls.target.y += 1;
+      const cameraOffset = new THREE.Vector3(8, 6, 8);
+      this.camera.position.copy(startPosition).add(cameraOffset);
     }
     
-    this.onDistanceChange?.(totalLength);
-    this.onProgressChange?.(0);
-    this.onFloorChange?.(0);
+    const distanceRemaining = totalLength * (1 - clampedProgress);
+    const startFloor = Math.round(startPosition.y / FLOOR_HEIGHT);
+    
+    this.onDistanceChange?.(distanceRemaining);
+    this.onProgressChange?.(clampedProgress);
+    this.onFloorChange?.(Math.min(Math.max(startFloor, 0), 2));
   }
 
   private createNavigationLine(curve: THREE.CatmullRomCurve3) {
@@ -624,11 +644,11 @@ export class ParkingScene {
   }
 
   public setNavigationProgress(progress: number) {
-    if (!this.navigationState.isActive && this.navigationCurve) {
-      this.navigationState.progress = Math.max(0, Math.min(1, progress));
-      this.navigationProgress = this.navigationState.progress;
-      this.updateCameraFromProgress();
-    }
+    if (!this.navigationCurve) return;
+    
+    this.navigationState.progress = Math.max(0, Math.min(1, progress));
+    this.navigationProgress = this.navigationState.progress;
+    this.updateCameraFromProgress();
   }
 
   public stepNavigation(direction: 'forward' | 'backward', amount: number = 0.02) {
@@ -646,12 +666,25 @@ export class ParkingScene {
     
     const position = this.navigationCurve.getPoint(this.navigationProgress);
     
-    this.camera.position.copy(position);
-    this.camera.position.y = 1.7;
-    
-    const nextPoint = this.navigationCurve.getPoint(Math.min(this.navigationProgress + 0.01, 1));
-    const direction = new THREE.Vector3().subVectors(nextPoint, position).normalize();
-    this.camera.lookAt(position.clone().add(direction));
+    if (this.cameraMode === 'firstPerson') {
+      this.camera.position.copy(position);
+      this.camera.position.y = 1.7;
+      
+      const nextPoint = this.navigationCurve.getPoint(Math.min(this.navigationProgress + 0.01, 1));
+      const direction = new THREE.Vector3().subVectors(nextPoint, position).normalize();
+      this.camera.lookAt(position.clone().add(direction));
+      
+      const dir = new THREE.Vector3();
+      this.camera.getWorldDirection(dir);
+      this.yaw = Math.atan2(dir.x, dir.z);
+      this.pitch = Math.asin(dir.y);
+    } else {
+      this.orbitControls.target.copy(position);
+      this.orbitControls.target.y += 1;
+      
+      const cameraOffset = new THREE.Vector3(8, 6, 8);
+      this.camera.position.copy(position).add(cameraOffset);
+    }
     
     const distanceRemaining = this.totalDistance * (1 - this.navigationProgress);
     const currentFloor = Math.round(position.y / FLOOR_HEIGHT);
@@ -680,7 +713,14 @@ export class ParkingScene {
       this.isPointerLocked = false;
       document.exitPointerLock?.();
       
-      if (this.navigationState.isActive && this.targetSpot) {
+      if (this.navigationState.isActive && this.navigationCurve) {
+        const navPosition = this.navigationCurve.getPoint(this.navigationProgress);
+        this.orbitControls.target.copy(navPosition);
+        this.orbitControls.target.y += 1;
+        
+        const cameraOffset = new THREE.Vector3(8, 6, 8);
+        this.camera.position.copy(navPosition).add(cameraOffset);
+      } else if (this.targetSpot) {
         this.camera.position.set(
           this.targetSpot.position.x + 15,
           this.targetSpot.position.y + 12,

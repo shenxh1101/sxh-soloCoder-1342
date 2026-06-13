@@ -346,6 +346,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       floor: spot.floor,
       spotId: spot.id,
       position: { ...spot.position },
+      lastProgress: clampedProgress,
     });
     
     return true;
@@ -373,6 +374,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
           timestamp: Date.now(),
           reason: 'left',
         },
+        continueDialog: initialContinueDialog,
       });
       return null;
     }
@@ -382,27 +384,33 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
       ? state.parkingSpots.find(s => s.id === historyItem.spotId)
       : null;
     
-    if (oldSpot && oldSpot.id !== newSpot.id && state.navigation.isActive) {
+    const hasHistoryProgress = historyItem && historyItem.lastProgress > 0;
+    const spotChanged = oldSpot && oldSpot.id !== newSpot.id;
+    
+    if (hasHistoryProgress || spotChanged) {
       set({
+        selectedPlate: plate,
+        selectedSpotId: newSpot.id,
+        selectedFloor: newSpot.floor,
         continueDialog: {
           isOpen: true,
           plateNumber: plate,
-          oldSpot,
+          oldSpot: oldSpot || null,
           newSpot,
         },
       });
       return null;
     }
     
-    const currentProgress = state.navigation.isActive ? state.navigation.progress : 0;
-    get().startNavigation(plate, currentProgress);
-    return 'continue';
+    get().startNavigation(plate, 0);
+    return 'restart';
   },
 
   handleContinueNavigation: (plate, option) => {
     const state = get();
-    const startProgress = option === 'continue' && state.navigation.isActive 
-      ? state.navigation.progress 
+    const historyItem = state.searchHistory.find(h => h.plateNumber === plate);
+    const startProgress = option === 'continue' && historyItem
+      ? historyItem.lastProgress
       : 0;
     
     get().startNavigation(plate, startProgress);
@@ -440,6 +448,12 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     const currentFloor = point ? Math.round(point.y / 3.5) : 0;
     const segmentIndex = getCurrentSegmentIndex(clampedProgress, state.navigation.segments);
     
+    const updatedHistory = state.searchHistory.map(h => 
+      h.plateNumber === state.navigation.plateNumber
+        ? { ...h, lastProgress: clampedProgress }
+        : h
+    );
+    
     return {
       navigation: {
         ...state.navigation,
@@ -448,6 +462,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         currentFloor: Math.min(Math.max(currentFloor, 0), 2),
         currentSegmentIndex: segmentIndex,
       },
+      searchHistory: updatedHistory,
     };
   }),
 
@@ -463,6 +478,12 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
     const currentFloor = point ? Math.round(point.y / 3.5) : 0;
     const segmentIndex = getCurrentSegmentIndex(newProgress, state.navigation.segments);
     
+    const updatedHistory = state.searchHistory.map(h => 
+      h.plateNumber === state.navigation.plateNumber
+        ? { ...h, lastProgress: newProgress }
+        : h
+    );
+    
     return {
       navigation: {
         ...state.navigation,
@@ -471,6 +492,7 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
         currentFloor: Math.min(Math.max(currentFloor, 0), 2),
         currentSegmentIndex: segmentIndex,
       },
+      searchHistory: updatedHistory,
     };
   }),
 
@@ -532,14 +554,49 @@ const useParkingStore = create<StoreState & StoreActions>((set, get) => ({
 
   setSelectedPlate: (plate) => set((state) => {
     if (!plate) {
-      return { selectedPlate: null, selectedSpotId: null };
+      return { 
+        selectedPlate: null, 
+        selectedSpotId: null,
+        navigation: state.navigation.isActive ? state.navigation : initialNavigationState,
+      };
     }
     
     const spot = findSpotByPlate(state.parkingSpots, plate);
+    
+    if (!spot || !spot.isOccupied) {
+      return {
+        selectedPlate: plate,
+        selectedSpotId: null,
+        navigation: state.navigation.isActive ? state.navigation : initialNavigationState,
+      };
+    }
+    
+    if (state.navigation.isActive && state.navigation.plateNumber === plate) {
+      return {
+        selectedPlate: plate,
+        selectedSpotId: spot.id,
+        selectedFloor: spot.floor,
+      };
+    }
+    
+    const pathPoints = generateNavigationPath(spot);
+    const { totalLength, points } = createSmoothPath(pathPoints);
+    const segments = generateNavigationSegments(spot, points, totalLength);
+    
     return {
       selectedPlate: plate,
-      selectedSpotId: spot?.id || null,
-      selectedFloor: spot?.floor || state.selectedFloor,
+      selectedSpotId: spot.id,
+      selectedFloor: spot.floor,
+      navigation: {
+        ...initialNavigationState,
+        targetSpotId: spot.id,
+        plateNumber: plate,
+        totalDistance: totalLength,
+        distanceRemaining: totalLength,
+        pathPoints: points.map(p => ({ x: p.x, y: p.y, z: p.z })),
+        segments,
+        currentSegmentIndex: 0,
+      },
     };
   }),
 

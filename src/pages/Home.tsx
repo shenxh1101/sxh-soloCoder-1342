@@ -7,6 +7,7 @@ import ControlPanel from '@/components/ControlPanel';
 import FloorPlan from '@/components/FloorPlan';
 import NavigationControls from '@/components/NavigationControls';
 import ContinueNavigationDialog from '@/components/ContinueNavigationDialog';
+import RouteOverview from '@/components/RouteOverview';
 import Toast, { ToastType } from '@/components/Toast';
 import useParkingStore from '@/store/parkingStore';
 import { useParkingSimulation } from '@/hooks/useParkingSimulation';
@@ -125,9 +126,16 @@ export default function Home() {
     }
   }, [parkingSpots, startNavigation, setFilterKeyword, showToast]);
 
+  const handleStartNavigationFromOverview = useCallback(() => {
+    if (selectedPlate) {
+      handleSearch(selectedPlate);
+    }
+  }, [selectedPlate, handleSearch]);
+
   const handleHistorySelect = useCallback((plate: string) => {
-    handleSearch(plate);
-  }, [handleSearch]);
+    const { continueNavigation } = useParkingStore.getState();
+    continueNavigation(plate);
+  }, []);
 
   const handleToggleSimulation = useCallback(() => {
     setSimRunning(prev => !prev);
@@ -210,12 +218,9 @@ export default function Home() {
 
   const handleResetParking = useCallback(() => {
     initializeSpots();
-    setSelectedPlate(null);
-    setSelectedSpotId(null);
-    stopNavigation();
     setFilterKeyword('');
     showToast('停车场已重置，所有车位状态已重新生成', 'success');
-  }, [initializeSpots, setSelectedPlate, setSelectedSpotId, stopNavigation, setFilterKeyword, showToast]);
+  }, [initializeSpots, setFilterKeyword, showToast]);
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-slate-950">
@@ -227,6 +232,7 @@ export default function Home() {
       </div>
       
       <PlateSelector onSearch={handleSearch} />
+      <RouteOverview onStartNavigation={handleStartNavigationFromOverview} />
       <NavigationHUD />
       <HistoryPanel onSelectPlate={handleHistorySelect} />
       <ControlPanel 

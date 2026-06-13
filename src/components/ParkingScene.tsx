@@ -95,9 +95,9 @@ export default function ParkingSceneComponent({ onSceneReady }: ParkingSceneProp
       if (targetSpotId !== lastTargetSpotIdRef.current) {
         const spot = parkingSpots.find(s => s.id === targetSpotId);
         if (spot) {
-          sceneRef.current.startNavigation(spot);
+          const currentProgress = lastNavigationProgressRef.current;
+          sceneRef.current.startNavigation(spot, currentProgress);
           lastTargetSpotIdRef.current = targetSpotId;
-          lastNavigationProgressRef.current = 0;
         }
       }
     } else {
