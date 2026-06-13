@@ -4,12 +4,15 @@ import PlateSelector from '@/components/PlateSelector';
 import NavigationHUD from '@/components/NavigationHUD';
 import HistoryPanel from '@/components/HistoryPanel';
 import ControlPanel from '@/components/ControlPanel';
+import FloorPlan from '@/components/FloorPlan';
+import NavigationControls from '@/components/NavigationControls';
 import Toast, { ToastType } from '@/components/Toast';
 import useParkingStore from '@/store/parkingStore';
 import { useParkingSimulation } from '@/hooks/useParkingSimulation';
 import { findSpotByPlate } from '@/utils/parkingData';
 import { generateNavigationPath, createSmoothPath } from '@/utils/pathUtils';
 import { ParkingScene } from '@/engine/ParkingScene';
+import { ParkingSpot } from '@/types/parking';
 
 export default function Home() {
   const [scene, setScene] = useState<ParkingScene | null>(null);
@@ -24,11 +27,24 @@ export default function Home() {
     navigation,
     startNavigation,
     stopNavigation,
+    pauseNavigation,
+    resumeNavigation,
+    togglePauseNavigation,
+    stepNavigation,
+    setNavigationProgress,
+    resetAllState,
     addSearchHistory,
     simulationActive,
     setSimulationActive,
     vehicleLeftEvent,
     clearVehicleLeftEvent,
+    cameraMode,
+    toggleCameraMode,
+    focusOnSpot: storeFocusOnSpot,
+    setSelectedFloor,
+    selectedSpotId,
+    setSelectedSpotId,
+    updateNavigationPaused,
   } = useParkingStore();
 
   useParkingSimulation(simRunning && simulationActive);
@@ -47,10 +63,40 @@ export default function Home() {
 
   useEffect(() => {
     if (vehicleLeftEvent) {
-      showToast(`车辆 ${vehicleLeftEvent.plateNumber} 已离开停车场`, 'warning');
+      showToast(`车辆 ${vehicleLeftEvent.plateNumber} 已离开停车场，导航已结束`, 'warning');
       clearVehicleLeftEvent();
     }
   }, [vehicleLeftEvent, showToast, clearVehicleLeftEvent]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && navigation.isActive) {
+        e.preventDefault();
+        const navState = scene?.getNavigationState();
+        if (navState) {
+          if (navState.isPaused) {
+            resumeNavigation();
+          } else {
+            pauseNavigation();
+          }
+          updateNavigationPaused(!navState.isPaused);
+        }
+      }
+      
+      if (e.shiftKey && navigation.isActive && navigation.isPaused) {
+        if (e.code === 'ArrowRight') {
+          e.preventDefault();
+          stepNavigation('forward', 0.02);
+        } else if (e.code === 'ArrowLeft') {
+          e.preventDefault();
+          stepNavigation('backward', 0.02);
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [navigation.isActive, navigation.isPaused, scene, pauseNavigation, resumeNavigation, stepNavigation, updateNavigationPaused]);
 
   const handleSearch = useCallback((plate: string) => {
     const spot = findSpotByPlate(parkingSpots, plate);
@@ -59,6 +105,7 @@ export default function Home() {
       showToast(`车辆 ${plate} 已离开停车场`, 'warning');
       stopNavigation();
       setSelectedPlate(null);
+      setSelectedSpotId(null);
       return;
     }
     
@@ -72,12 +119,15 @@ export default function Home() {
       navigation: {
         ...state.navigation,
         isActive: true,
+        isPaused: false,
+        progress: 0,
         targetSpotId: spot.id,
         plateNumber: plate,
         totalDistance: totalLength,
         distanceRemaining: totalLength,
         currentFloor: 0,
-      }
+      },
+      selectedFloor: spot.floor,
     }));
     
     addSearchHistory({
@@ -89,7 +139,7 @@ export default function Home() {
     });
     
     showToast(`已定位到 ${plate}，正在为您导航`, 'success');
-  }, [parkingSpots, startNavigation, stopNavigation, setSelectedPlate, addSearchHistory, showToast]);
+  }, [parkingSpots, startNavigation, stopNavigation, setSelectedPlate, setSelectedSpotId, addSearchHistory, showToast]);
 
   const handleHistorySelect = useCallback((plate: string) => {
     handleSearch(plate);
@@ -107,6 +157,81 @@ export default function Home() {
     setScene(sceneInstance);
   }, []);
 
+  const handleSpotClick = useCallback((spot: ParkingSpot) => {
+    setSelectedSpotId(spot.id);
+    setSelectedFloor(spot.floor);
+    
+    if (spot.isOccupied && spot.plateNumber) {
+      showToast(`车位 ${spot.row}-${spot.col}: ${spot.plateNumber}`, 'info');
+    } else {
+      showToast(`车位 ${spot.row}-${spot.col}: 空闲`, 'info');
+    }
+  }, [setSelectedSpotId, setSelectedFloor, showToast]);
+
+  const handleSpotNavigate = useCallback((spotId: string) => {
+    const spot = parkingSpots.find(s => s.id === spotId);
+    if (!spot || !spot.plateNumber) {
+      showToast('该车位没有停放车辆', 'warning');
+      return;
+    }
+    
+    handleSearch(spot.plateNumber);
+  }, [parkingSpots, handleSearch, showToast]);
+
+  const handleFloorChange = useCallback((floor: number) => {
+    setSelectedFloor(floor);
+  }, [setSelectedFloor]);
+
+  const handlePauseNav = useCallback(() => {
+    pauseNavigation();
+    if (scene) {
+      updateNavigationPaused(true);
+    }
+  }, [pauseNavigation, scene, updateNavigationPaused]);
+
+  const handleResumeNav = useCallback(() => {
+    resumeNavigation();
+    if (scene) {
+      updateNavigationPaused(false);
+    }
+  }, [resumeNavigation, scene, updateNavigationPaused]);
+
+  const handleStopNav = useCallback(() => {
+    stopNavigation();
+    setSelectedPlate(null);
+    setSelectedSpotId(null);
+    showToast('导航已结束', 'info');
+  }, [stopNavigation, setSelectedPlate, setSelectedSpotId, showToast]);
+
+  const handleStepForward = useCallback(() => {
+    stepNavigation('forward', 0.05);
+  }, [stepNavigation]);
+
+  const handleStepBackward = useCallback(() => {
+    stepNavigation('backward', 0.05);
+  }, [stepNavigation]);
+
+  const handleToggleCamera = useCallback(() => {
+    toggleCameraMode();
+    showToast(
+      cameraMode === 'orbit' ? '已切换到第一人称视角' : '已切换到自由视角',
+      'info'
+    );
+  }, [toggleCameraMode, cameraMode, showToast]);
+
+  const handleResetProgress = useCallback(() => {
+    setNavigationProgress(0);
+    showToast('已重置到导航起点', 'info');
+  }, [setNavigationProgress, showToast]);
+
+  const handleResetParking = useCallback(() => {
+    initializeSpots();
+    setSelectedPlate(null);
+    setSelectedSpotId(null);
+    stopNavigation();
+    showToast('停车场已重置，所有车位状态已重新生成', 'success');
+  }, [initializeSpots, setSelectedPlate, setSelectedSpotId, stopNavigation, showToast]);
+
   return (
     <div className="relative w-full h-screen overflow-hidden bg-slate-950">
       <ParkingSceneComponent onSceneReady={handleSceneReady} />
@@ -119,7 +244,24 @@ export default function Home() {
       <PlateSelector onSearch={handleSearch} />
       <NavigationHUD />
       <HistoryPanel onSelectPlate={handleHistorySelect} />
-      <ControlPanel onToggleSimulation={handleToggleSimulation} />
+      <ControlPanel 
+        onToggleSimulation={handleToggleSimulation} 
+        onResetParking={handleResetParking}
+      />
+      <NavigationControls
+        onPause={handlePauseNav}
+        onResume={handleResumeNav}
+        onStop={handleStopNav}
+        onStepForward={handleStepForward}
+        onStepBackward={handleStepBackward}
+        onToggleCamera={handleToggleCamera}
+        onResetProgress={handleResetProgress}
+      />
+      <FloorPlan
+        onSpotClick={handleSpotClick}
+        onSpotNavigate={handleSpotNavigate}
+        onFloorChange={handleFloorChange}
+      />
       
       <div className="absolute bottom-20 left-4 z-20">
         <div className="bg-slate-900/80 backdrop-blur-md rounded-lg px-3 py-2 border border-slate-700/50 text-xs text-slate-400">

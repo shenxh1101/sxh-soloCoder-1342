@@ -9,9 +9,10 @@ import { CameraMode } from '@/types/parking';
 
 interface ControlPanelProps {
   onToggleSimulation: () => void;
+  onResetParking?: () => void;
 }
 
-export default function ControlPanel({ onToggleSimulation }: ControlPanelProps) {
+export default function ControlPanel({ onToggleSimulation, onResetParking }: ControlPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { 
     parkingSpots, 
@@ -67,8 +68,12 @@ export default function ControlPanel({ onToggleSimulation }: ControlPanelProps) 
   };
 
   const handleReset = () => {
-    const newSpots = generateParkingSpots();
-    setParkingSpots(newSpots);
+    if (onResetParking) {
+      onResetParking();
+    } else {
+      const newSpots = generateParkingSpots();
+      setParkingSpots(newSpots);
+    }
   };
 
   const handleToggleSim = () => {

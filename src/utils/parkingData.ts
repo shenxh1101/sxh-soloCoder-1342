@@ -18,35 +18,70 @@ export function generateParkingSpots(): ParkingSpot[] {
   const spots: ParkingSpot[] = [];
   const platesCopy = [...PRESET_PLATES];
   
+  const allSpotIndices: { floor: number; row: number; col: number; x: number; y: number; z: number }[] = [];
+  
   for (let floor = 0; floor < FLOOR_COUNT; floor++) {
     for (let row = 0; row < ROWS_PER_FLOOR; row++) {
       for (let col = 0; col < COLS_PER_FLOOR; col++) {
-        const id = `F${floor}-R${row}-C${col}`;
         const x = col * SPOT_WIDTH + SPOT_WIDTH / 2 - PARKING_WIDTH / 2 + SPOT_WIDTH / 2;
         const z = row * SPOT_LENGTH + SPOT_LENGTH / 2 - PARKING_LENGTH / 2;
         const y = floor * FLOOR_HEIGHT;
-        
-        const isOccupied = Math.random() > 0.5;
-        let plateNumber: string | undefined;
-        
-        if (isOccupied && platesCopy.length > 0) {
-          const idx = Math.floor(Math.random() * platesCopy.length);
-          plateNumber = platesCopy.splice(idx, 1)[0];
-        }
-        
-        spots.push({
-          id,
-          floor,
-          row,
-          col,
-          position: { x, y, z },
-          isOccupied,
-          plateNumber,
-          vehicleType: isOccupied ? (Math.random() > 0.7 ? 'suv' : 'car') : 'none',
-        });
+        allSpotIndices.push({ floor, row, col, x, y, z });
       }
     }
   }
+  
+  for (let i = allSpotIndices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [allSpotIndices[i], allSpotIndices[j]] = [allSpotIndices[j], allSpotIndices[i]];
+  }
+  
+  const occupiedCount = Math.floor(allSpotIndices.length * 0.5);
+  const guaranteedPlateSpots = allSpotIndices.slice(0, PRESET_PLATES.length);
+  const randomOccupiedSpots = allSpotIndices.slice(PRESET_PLATES.length, occupiedCount);
+  
+  const occupiedIndices = new Set([
+    ...guaranteedPlateSpots.map((_, i) => i),
+    ...randomOccupiedSpots.map((_, i) => i + PRESET_PLATES.length),
+  ]);
+  
+  const finalSpots = [...guaranteedPlateSpots, ...randomOccupiedSpots, ...allSpotIndices.slice(occupiedCount)];
+  
+  let plateIdx = 0;
+  
+  for (let i = 0; i < finalSpots.length; i++) {
+    const info = finalSpots[i];
+    const id = `F${info.floor}-R${info.row}-C${info.col}`;
+    
+    const isOccupied = occupiedIndices.has(i);
+    let plateNumber: string | undefined;
+    let vehicleType: 'car' | 'suv' | 'none' = 'none';
+    
+    if (isOccupied) {
+      if (plateIdx < PRESET_PLATES.length) {
+        plateNumber = platesCopy[plateIdx];
+        plateIdx++;
+      }
+      vehicleType = Math.random() > 0.7 ? 'suv' : 'car';
+    }
+    
+    spots.push({
+      id,
+      floor: info.floor,
+      row: info.row,
+      col: info.col,
+      position: { x: info.x, y: info.y, z: info.z },
+      isOccupied,
+      plateNumber,
+      vehicleType,
+    });
+  }
+  
+  spots.sort((a, b) => {
+    if (a.floor !== b.floor) return a.floor - b.floor;
+    if (a.row !== b.row) return a.row - b.row;
+    return a.col - b.col;
+  });
   
   return spots;
 }

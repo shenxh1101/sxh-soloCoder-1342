@@ -9,11 +9,21 @@ import { generateNavigationPath, createSmoothPath } from '@/utils/pathUtils';
 
 export type CameraMode = 'orbit' | 'firstPerson';
 
+export interface NavigationState {
+  isActive: boolean;
+  isPaused: boolean;
+  progress: number;
+  targetSpotId: string | null;
+}
+
 export interface ParkingSceneOptions {
   container: HTMLElement;
   onFloorChange?: (floor: number) => void;
   onDistanceChange?: (distance: number) => void;
-  onVehicleLeft?: (plateNumber: string) => void;
+  onProgressChange?: (progress: number) => void;
+  onNavigationEnd?: () => void;
+  onNavigationComplete?: () => void;
+  onSpotClick?: (spotId: string) => void;
 }
 
 export class ParkingScene {
@@ -30,33 +40,46 @@ export class ParkingScene {
   private navigationCurve: THREE.CatmullRomCurve3 | null = null;
   private navigationProgress: number = 0;
   
+  private navigationState: NavigationState = {
+    isActive: false,
+    isPaused: false,
+    progress: 0,
+    targetSpotId: null,
+  };
+  
+  private targetSpot: ParkingSpot | null = null;
+  private totalDistance: number = 0;
+  
   private animationId: number | null = null;
   private clock: THREE.Clock;
   
   private cameraMode: CameraMode = 'orbit';
-  private firstPersonVelocity: THREE.Vector3 = new THREE.Vector3();
   private keys: Set<string> = new Set();
   private yaw: number = 0;
   private pitch: number = 0;
   private isPointerLocked: boolean = false;
   
-  private isNavigating: boolean = false;
-  private targetSpot: ParkingSpot | null = null;
-  private totalDistance: number = 0;
-  
   private floorGroup: THREE.Group[] = [];
   
   private onFloorChange?: (floor: number) => void;
   private onDistanceChange?: (distance: number) => void;
-  private onVehicleLeft?: (plateNumber: string) => void;
+  private onProgressChange?: (progress: number) => void;
+  private onNavigationEnd?: () => void;
+  private onNavigationComplete?: () => void;
+  private onSpotClick?: (spotId: string) => void;
   
   private materialCache: Map<string, THREE.Material> = new Map();
+  private savedCameraState: { position: THREE.Vector3; target: THREE.Vector3; } | null = null;
+  private firstPersonSavedProgress: number = 0;
 
   constructor(options: ParkingSceneOptions) {
     this.container = options.container;
     this.onFloorChange = options.onFloorChange;
     this.onDistanceChange = options.onDistanceChange;
-    this.onVehicleLeft = options.onVehicleLeft;
+    this.onProgressChange = options.onProgressChange;
+    this.onNavigationEnd = options.onNavigationEnd;
+    this.onNavigationComplete = options.onNavigationComplete;
+    this.onSpotClick = options.onSpotClick;
     this.clock = new THREE.Clock();
     
     this.scene = new THREE.Scene();
@@ -387,7 +410,8 @@ export class ParkingScene {
   private createVehicle(type: 'car' | 'suv'): THREE.Group {
     const group = new THREE.Group();
     
-    const bodyColor = type === 'suv' ? 0x4a5568 : 0x2d3748;
+    const colors = [0x2d3748, 0x4a5568, 0x1a365d, 0x5d4e37, 0x4a1a1a];
+    const bodyColor = colors[Math.floor(Math.random() * colors.length)];
     const bodyHeight = type === 'suv' ? 1.4 : 1.1;
     const bodyWidth = type === 'suv' ? 2.2 : 2;
     const bodyLength = type === 'suv' ? 4.8 : 4.5;
@@ -513,7 +537,12 @@ export class ParkingScene {
 
   public startNavigation(spot: ParkingSpot) {
     this.targetSpot = spot;
-    this.isNavigating = true;
+    this.navigationState = {
+      isActive: true,
+      isPaused: false,
+      progress: 0,
+      targetSpotId: spot.id,
+    };
     this.navigationProgress = 0;
     
     const pathPoints = generateNavigationPath(spot);
@@ -529,6 +558,7 @@ export class ParkingScene {
     }
     
     this.onDistanceChange?.(totalLength);
+    this.onProgressChange?.(0);
     this.onFloorChange?.(0);
   }
 
@@ -555,7 +585,13 @@ export class ParkingScene {
   }
 
   public stopNavigation() {
-    this.isNavigating = false;
+    this.navigationState = {
+      isActive: false,
+      isPaused: false,
+      progress: 0,
+      targetSpotId: null,
+    };
+    this.navigationProgress = 0;
     this.targetSpot = null;
     this.navigationCurve = null;
     
@@ -565,34 +601,155 @@ export class ParkingScene {
       (this.navigationLine.material as THREE.Material).dispose();
       this.navigationLine = null;
     }
+    
+    this.onNavigationEnd?.();
+  }
+
+  public pauseNavigation() {
+    if (this.navigationState.isActive) {
+      this.navigationState.isPaused = true;
+    }
+  }
+
+  public resumeNavigation() {
+    if (this.navigationState.isActive) {
+      this.navigationState.isPaused = false;
+    }
+  }
+
+  public togglePauseNavigation() {
+    if (this.navigationState.isActive) {
+      this.navigationState.isPaused = !this.navigationState.isPaused;
+    }
+  }
+
+  public setNavigationProgress(progress: number) {
+    if (!this.navigationState.isActive && this.navigationCurve) {
+      this.navigationState.progress = Math.max(0, Math.min(1, progress));
+      this.navigationProgress = this.navigationState.progress;
+      this.updateCameraFromProgress();
+    }
+  }
+
+  public stepNavigation(direction: 'forward' | 'backward', amount: number = 0.02) {
+    if (!this.navigationState.isActive || !this.navigationCurve) return;
+    
+    const delta = direction === 'forward' ? amount : -amount;
+    const newProgress = Math.max(0, Math.min(1, this.navigationState.progress + delta));
+    this.navigationState.progress = newProgress;
+    this.navigationProgress = newProgress;
+    this.updateCameraFromProgress();
+  }
+
+  private updateCameraFromProgress() {
+    if (!this.navigationCurve) return;
+    
+    const position = this.navigationCurve.getPoint(this.navigationProgress);
+    
+    this.camera.position.copy(position);
+    this.camera.position.y = 1.7;
+    
+    const nextPoint = this.navigationCurve.getPoint(Math.min(this.navigationProgress + 0.01, 1));
+    const direction = new THREE.Vector3().subVectors(nextPoint, position).normalize();
+    this.camera.lookAt(position.clone().add(direction));
+    
+    const distanceRemaining = this.totalDistance * (1 - this.navigationProgress);
+    const currentFloor = Math.round(position.y / FLOOR_HEIGHT);
+    
+    this.onDistanceChange?.(distanceRemaining);
+    this.onProgressChange?.(this.navigationProgress);
+    this.onFloorChange?.(Math.min(Math.max(currentFloor, 0), 2));
+  }
+
+  public getNavigationState(): NavigationState {
+    return { ...this.navigationState };
   }
 
   public setCameraMode(mode: CameraMode) {
-    this.cameraMode = mode;
+    const wasNavigating = this.navigationState.isActive && !this.navigationState.isPaused;
     
     if (mode === 'orbit') {
+      if (this.cameraMode === 'firstPerson' && this.navigationState.isActive) {
+        this.savedCameraState = {
+          position: this.camera.position.clone(),
+          target: new THREE.Vector3(0, 2, 0),
+        };
+      }
+      
       this.orbitControls.enabled = true;
       this.isPointerLocked = false;
       document.exitPointerLock?.();
-      this.camera.position.set(25, 20, 30);
-      this.orbitControls.target.set(0, 2, 0);
+      
+      if (this.navigationState.isActive && this.targetSpot) {
+        this.camera.position.set(
+          this.targetSpot.position.x + 15,
+          this.targetSpot.position.y + 12,
+          this.targetSpot.position.z + 15
+        );
+        this.orbitControls.target.set(
+          this.targetSpot.position.x,
+          this.targetSpot.position.y + 1,
+          this.targetSpot.position.z
+        );
+      } else {
+        this.camera.position.set(25, 20, 30);
+        this.orbitControls.target.set(0, 2, 0);
+      }
     } else {
       this.orbitControls.enabled = false;
-      this.camera.position.set(0, 1.7, PARKING_LENGTH / 2 + 5);
-      this.yaw = Math.PI;
-      this.pitch = 0;
-      this.updateFirstPersonRotation();
+      
+      if (this.navigationState.isActive && this.navigationCurve) {
+        const position = this.navigationCurve.getPoint(this.navigationProgress);
+        this.camera.position.copy(position);
+        this.camera.position.y = 1.7;
+        
+        const nextPoint = this.navigationCurve.getPoint(Math.min(this.navigationProgress + 0.01, 1));
+        const direction = new THREE.Vector3().subVectors(nextPoint, position).normalize();
+        this.camera.lookAt(position.clone().add(direction));
+        
+        const dir = new THREE.Vector3();
+        this.camera.getWorldDirection(dir);
+        this.yaw = Math.atan2(dir.x, dir.z);
+        this.pitch = Math.asin(dir.y);
+      } else {
+        this.camera.position.set(0, 1.7, PARKING_LENGTH / 2 + 5);
+        this.yaw = Math.PI;
+        this.pitch = 0;
+        this.updateFirstPersonRotation();
+      }
     }
+    
+    this.cameraMode = mode;
   }
 
   public getCameraMode(): CameraMode {
     return this.cameraMode;
   }
 
-  public followNavigationPath() {
-    if (!this.isNavigating || !this.navigationCurve || !this.targetSpot) return;
+  public focusOnSpot(spot: ParkingSpot) {
+    if (this.cameraMode === 'orbit') {
+      this.orbitControls.target.set(spot.position.x, spot.position.y + 1, spot.position.z);
+      this.camera.position.set(
+        spot.position.x + 15,
+        spot.position.y + 12,
+        spot.position.z + 15
+      );
+    }
+  }
+
+  public focusOnFloor(floor: number) {
+    if (this.cameraMode === 'orbit') {
+      const targetY = floor * FLOOR_HEIGHT + 1;
+      this.orbitControls.target.set(0, targetY, 0);
+      this.camera.position.set(25, targetY + 15, 30);
+    }
+  }
+
+  private followNavigationPath() {
+    if (!this.navigationState.isActive || this.navigationState.isPaused || !this.navigationCurve || !this.targetSpot) return;
     
     this.navigationProgress = Math.min(this.navigationProgress + 0.003, 1);
+    this.navigationState.progress = this.navigationProgress;
     
     const position = this.navigationCurve.getPoint(this.navigationProgress);
     
@@ -609,9 +766,12 @@ export class ParkingScene {
     const currentFloor = Math.round(position.y / FLOOR_HEIGHT);
     
     this.onDistanceChange?.(distanceRemaining);
+    this.onProgressChange?.(this.navigationProgress);
     this.onFloorChange?.(Math.min(Math.max(currentFloor, 0), 2));
     
     if (this.navigationProgress >= 1) {
+      this.navigationState.isPaused = true;
+      this.onNavigationComplete?.();
     }
   }
 
@@ -632,6 +792,25 @@ export class ParkingScene {
 
   private onKeyDown = (e: KeyboardEvent) => {
     this.keys.add(e.code);
+    
+    if (this.navigationState.isActive) {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        this.togglePauseNavigation();
+      }
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') {
+        if (e.shiftKey) {
+          e.preventDefault();
+          this.stepNavigation('forward', 0.01);
+        }
+      }
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
+        if (e.shiftKey) {
+          e.preventDefault();
+          this.stepNavigation('backward', 0.01);
+        }
+      }
+    }
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
@@ -649,7 +828,7 @@ export class ParkingScene {
   };
 
   private onMouseMove = (e: MouseEvent) => {
-    if (this.cameraMode === 'firstPerson' && this.isPointerLocked) {
+    if (this.cameraMode === 'firstPerson' && this.isPointerLocked && !this.navigationState.isActive) {
       this.yaw -= e.movementX * 0.002;
       this.pitch -= e.movementY * 0.002;
       this.pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, this.pitch));
@@ -663,7 +842,7 @@ export class ParkingScene {
   }
 
   private updateFirstPersonMovement(delta: number) {
-    if (this.cameraMode !== 'firstPerson' || this.isNavigating) return;
+    if (this.cameraMode !== 'firstPerson' || this.navigationState.isActive) return;
     
     const speed = 10 * delta;
     const direction = new THREE.Vector3();
@@ -682,10 +861,14 @@ export class ParkingScene {
       this.camera.position.addScaledVector(direction, -speed);
     }
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) {
-      this.camera.position.addScaledVector(right, -speed);
+      if (!this.keys.has('ShiftLeft')) {
+        this.camera.position.addScaledVector(right, -speed);
+      }
     }
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) {
-      this.camera.position.addScaledVector(right, speed);
+      if (!this.keys.has('ShiftLeft')) {
+        this.camera.position.addScaledVector(right, speed);
+      }
     }
     
     const floor = Math.round(this.camera.position.y / FLOOR_HEIGHT);
@@ -703,7 +886,7 @@ export class ParkingScene {
       this.updateFirstPersonMovement(delta);
     }
     
-    if (this.isNavigating) {
+    if (this.navigationState.isActive && !this.navigationState.isPaused) {
       this.followNavigationPath();
     }
     
@@ -775,16 +958,5 @@ export class ParkingScene {
     
     this.renderer.dispose();
     this.container.removeChild(this.renderer.domElement);
-  }
-
-  public focusOnSpot(spot: ParkingSpot) {
-    if (this.cameraMode === 'orbit') {
-      this.orbitControls.target.set(spot.position.x, spot.position.y + 1, spot.position.z);
-      this.camera.position.set(
-        spot.position.x + 15,
-        spot.position.y + 12,
-        spot.position.z + 15
-      );
-    }
   }
 }
